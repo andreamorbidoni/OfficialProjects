@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -43,7 +44,7 @@ END       = "2026-03-02"   # Full period end
 RUN_END   = END            # ← swap to TRAIN_END to run in-sample only
 
 # ── Covariance estimation ──────────────────────────────────────────────────────
-COV_LOOKBACK  = 126    # Rolling window for covariance matrix (≈ 6 months, min 60)
+COV_LOOKBACK  = 252    # Rolling window for covariance matrix (≈ 6 months, min 60)
                        # Ledoit-Wolf shrinkage is always applied on top
 SHRINK_ALPHA  = 0.0    # Extra diagonal regularisation (0 = pure LW, 0.01 = extra damping)
 
@@ -54,12 +55,34 @@ REBAL_FREQ    = 21     # Trading days between rebalances (~monthly)
 
 MIN_WEIGHT    = 0.01   # 1% floor per holding (forces diversification)
 MAX_WEIGHT    = 0.15   # 15% cap per holding
-MAX_SECTOR    = 0.35   # Max 35% per sector
+MAX_SECTOR    = 0.25   # Max 25% per sector
 
 # ── Volatility target (optional dampener) ──────────────────────────────────────
 # If the ex-ante portfolio vol exceeds VOL_TARGET, weights are scaled down
 # and the remainder is held in cash.  Set to None to disable.
 VOL_TARGET    = 0.10   # 10% annualised; set to None to skip
+
+# ── Tracking Error Volatility penalty (optional) ──────────────────────────────
+# Adds a soft ex-ante TEV penalty to the min-variance objective:
+#
+#   min  w'Σw  +  TE_PENALTY · TEV²_daily(w)
+#
+# where  TEV²_daily(w) = w'Σw − 2·w'c_b + σ²_b
+#   c_b  = Cov(assets, benchmark)  (estimated from the same rolling window as Σ)
+#   σ²_b = Var(benchmark return)   (same window)
+#
+# The combined objective is still a convex QP:
+#   (1 + TE_PENALTY)·w'Σw  − 2·TE_PENALTY·w'c_b  + const
+# so it is always feasible and numerically stable.
+#
+# Interpretation of TE_PENALTY (λ):
+#   0          → pure minimum-variance  (TE ignored)
+#   1  – 5     → mild TE awareness
+#   5  – 20    → strong TE control
+#   > 20       → portfolio is pulled heavily toward the benchmark
+#
+# Benchmark returns are taken from the BENCHMARK ticker already configured above.
+TE_PENALTY = 0.0    # Set to 0.0 to disable; e.g. 5.0 for moderate TE control
 
 # ── Execution costs ────────────────────────────────────────────────────────────
 INIT_CASH     = 100_000
@@ -131,27 +154,48 @@ def min_variance_weights(
     max_w: float,
     sector_labels: list,
     max_sector: float,
-
+    c_bench: np.ndarray | None = None,
+    te_penalty: float = 0.0,
 ) -> np.ndarray:
     """
-    Solve the minimum-variance problem:
+    Solve the penalised minimum-variance problem:
 
-        min  w' Σ w
+        min  w'Σw  +  λ · TEV²_daily(w)
         s.t. Σ wᵢ = 1
-             min_w ≤ wᵢ ≤ max_w   ∀ i
+             min_w ≤ wᵢ ≤ max_w          ∀ i
              Σ_{i ∈ sector} wᵢ ≤ max_sector   ∀ sector
+
+    where  TEV²_daily(w) = w'Σw − 2·w'c_b + σ²_b
+    and    λ = te_penalty.
+
+    Because σ²_b is constant in w, the combined objective simplifies to the
+    convex QP:
+        (1 + λ)·w'Σw  − 2λ·w'c_b  + const
+
+    Gradient:  2·(1 + λ)·Σ·w  − 2λ·c_b
+
+    c_bench   : n-vector of Cov(asset_i, benchmark) from the rolling window.
+                Ignored when te_penalty == 0.
+    te_penalty: λ ≥ 0.  0 = pure min-variance; higher values pull the
+                portfolio toward the benchmark return.
 
     Returns a weight vector of length n.
     Falls back to constraint-clipped inverse-vol weights on optimiser failure.
     """
     w0 = np.full(n, 1.0 / n)
 
-    # Objective: portfolio variance
-    def port_var(w):
-        return w @ cov @ w
+    use_te = (te_penalty > 0.0) and (c_bench is not None)
+    lam    = te_penalty if use_te else 0.0
+    cb     = c_bench    if use_te else np.zeros(n)
 
-    def port_var_grad(w):
-        return 2 * cov @ w
+    # ── Objective and analytic gradient ───────────────────────────────────────
+    # Pure min-var:  w'Σw
+    # With TE penalty: (1+λ)·w'Σw − 2λ·w'c_b  (σ²_b constant, dropped)
+    def objective(w):
+        return (1.0 + lam) * (w @ cov @ w) - 2.0 * lam * (w @ cb)
+
+    def objective_grad(w):
+        return 2.0 * (1.0 + lam) * (cov @ w) - 2.0 * lam * cb
 
     constraints = [
         {"type": "eq", "fun": lambda w: w.sum() - 1.0}
@@ -169,15 +213,21 @@ def min_variance_weights(
 
     bounds = [(min_w, max_w)] * n
 
-    result = minimize(
-        port_var,
-        w0,
-        jac=port_var_grad,
-        method="SLSQP",
-        bounds=bounds,
-        constraints=constraints,
-        options={"ftol": 1e-12, "maxiter": 1000},
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Values in x were outside bounds during a minimize step",
+            category=RuntimeWarning,
+        )
+        result = minimize(
+            objective,
+            w0,
+            jac=objective_grad,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"ftol": 1e-12, "maxiter": 1000},
+        )
 
     if result.success:
         w     = np.clip(result.x, 0, None)   # guard against tiny negatives
@@ -230,6 +280,8 @@ print(f"  Benchmark : {BENCHMARK}")
 print(f"  Objective : Minimum Variance (Ledoit-Wolf shrinkage, cov={COV_LOOKBACK}d)")
 if VOL_TARGET:
     print(f"  Vol Target: {VOL_TARGET:.0%} annualised (cash buffer on excess)")
+if TE_PENALTY > 0.0:
+    print(f"  TE Penalty: λ = {TE_PENALTY} (ex-ante TEV² penalty vs {BENCHMARK})")
 
 # ==============================================================================
 # 2. DATA DOWNLOAD
@@ -307,10 +359,28 @@ for i, date in enumerate(rebal_dates):
     cov_sub    = lw_cov(sub_ret, SHRINK_ALPHA)
     sub_labels = [sector_labels[j] for j in range(n_assets) if col_valid[j]]
 
+    # ── Ex-ante TEV penalty: Cov(assets, benchmark) from the same window ──────
+    # bench_window is the benchmark return series aligned to the same rows.
+    # c_bench[i] = Cov(r_i, r_bench)  — used in the penalised objective.
+    c_bench_sub = None
+    if TE_PENALTY > 0.0:
+        bench_window = bench_returns.reindex(returns.index).iloc[
+            loc - COV_LOOKBACK : loc
+        ].values                                        # shape (T,)
+
+        # Keep only rows where benchmark return is not NaN
+        valid_rows = ~np.isnan(bench_window)
+        if valid_rows.sum() > 10:
+            b = bench_window[valid_rows]                # (T',)
+            a = sub_ret[valid_rows]                     # (T', n_sub)
+            # c_bench[i] = sample Cov(r_i, r_bench) = mean((r_i - μ_i)(r_b - μ_b))
+            b_dm = b - b.mean()
+            a_dm = a - a.mean(axis=0)
+            c_bench_sub = (a_dm * b_dm[:, None]).mean(axis=0)  # (n_sub,)
 
     w_sub = min_variance_weights(
         cov_sub, col_valid.sum(), MIN_WEIGHT, MAX_WEIGHT,
-        sub_labels, MAX_SECTOR,
+        sub_labels, MAX_SECTOR, c_bench_sub, TE_PENALTY,
     )
 
     # Expand back to full universe (excluded assets get 0)
@@ -568,6 +638,12 @@ if VOL_TARGET is not None:
         y=VOL_TARGET, line_dash="dot", line_color="green",
         annotation_text=f"Vol target {VOL_TARGET:.0%}",
         annotation_position="bottom right")
+if TE_PENALTY > 0.0:
+    fig4.add_annotation(
+        xref="paper", yref="paper", x=0.99, y=0.01,
+        text=f"TE penalty active (λ={TE_PENALTY})",
+        showarrow=False, font=dict(size=10, color="purple"),
+        xanchor="right", yanchor="bottom")
 add_stress_shading(fig4, STRESS_PERIODS)
 fig4.update_layout(
     title="Rolling 63-Day Realised Volatility (annualised)",
