@@ -7,7 +7,7 @@ from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 
 # ==============================================================================
-# CONFIGURATION  ← only section you need to edit
+# CONFIGURATION  
 # ==============================================================================
 
 # ── Universe ───────────────────────────────────────────────────────────────────
@@ -33,9 +33,7 @@ SECTOR_MAP = {
 }
 
 # ── Benchmark ──────────────────────────────────────────────────────────────────
-# FIX: "^STOXX" is not a valid yfinance ticker.
-#      "^STOXX600" (STOXX Europe 600) is the broadest match for this universe.
-#      Alternatives: "^STOXX50E" (Euro STOXX 50 – large-cap only).
+
 BENCHMARK = "^STOXX"
 
 # ── Date range & walk-forward split ───────────────────────────────────────────
@@ -53,12 +51,9 @@ SHRINK_ALPHA  = 0.0    # Extra diagonal regularisation (0 = pure LW, 0.01 = extr
 REBAL_FREQ    = 21     # Trading days between rebalances (~monthly)
 
 # ── Position sizing ────────────────────────────────────────────────────────────
-# FIX: Comment was "15% cap" but the value is 0.05 = 5%.
-#      NOTE: With a 10-stock universe, a 5% cap means the optimizer has little
-#      freedom (10 × 5% = 50% max invested). Consider raising to 0.15-0.20 to
-#      let min-variance do meaningful work.
+
 MIN_WEIGHT    = 0.01   # 1% floor per holding (forces diversification)
-MAX_WEIGHT    = 0.10   # 5% cap per holding
+MAX_WEIGHT    = 0.15   # 15% cap per holding
 MAX_SECTOR    = 0.35   # Max 35% per sector
 
 # ── Volatility target (optional dampener) ──────────────────────────────────────
@@ -71,12 +66,11 @@ INIT_CASH     = 100_000
 FEES          = 0.0015
 SLIPPAGE      = 0.003
 
-# FIX: Defined once here only (was duplicated at line 360 in the original).
+
 CASH_RETURN_ANN = 0.035   # Annual return on cash held (3.5%)
 
 # ── Stress periods ─────────────────────────────────────────────────────────────
-# FIX: Removed "Dot-com Bust 2001-02" and "GFC 2008-09" — both predate
-#      START = "2010-01-01" and will always produce N/A in the output.
+
 STRESS_PERIODS = {
     "Dot-com Bust 2001-02": ("2001-01-01", "2002-12-31"),
     "GFC 2008-09":          ("2008-09-01", "2009-03-31"),
@@ -137,8 +131,7 @@ def min_variance_weights(
     max_w: float,
     sector_labels: list,
     max_sector: float,
-    # FIX: Removed unused `sector_names` parameter that was accepted but never
-    #      referenced inside the function body (dead code).
+
 ) -> np.ndarray:
     """
     Solve the minimum-variance problem:
@@ -191,9 +184,6 @@ def min_variance_weights(
         total = w.sum()
         return w / total if total > 0 else w0
 
-    # FIX: Original fallback returned raw inverse-vol weights that could violate
-    #      min_w / max_w / sector constraints.  Now we clip to [min_w, max_w]
-    #      and renormalise so the fallback respects individual weight bounds.
     vols       = np.sqrt(np.diag(cov))
     inv        = np.where(vols > 0, 1.0 / vols, 0.0)
     w_fallback = inv / inv.sum() if inv.sum() > 0 else w0
@@ -317,7 +307,7 @@ for i, date in enumerate(rebal_dates):
     cov_sub    = lw_cov(sub_ret, SHRINK_ALPHA)
     sub_labels = [sector_labels[j] for j in range(n_assets) if col_valid[j]]
 
-    # FIX: Removed the dead `sector_names` argument from the call site.
+
     w_sub = min_variance_weights(
         cov_sub, col_valid.sum(), MIN_WEIGHT, MAX_WEIGHT,
         sub_labels, MAX_SECTOR,
@@ -376,8 +366,7 @@ print(f"  ✓  Weight range [{MIN_WEIGHT:.1%} – {MAX_WEIGHT:.1%}] | Sector cap
 # ==============================================================================
 # 5. BACKTEST + CASH RETURN ADJUSTMENT
 # ==============================================================================
-# FIX: Removed the duplicate section header / daily_cash_rate / print block
-#      that appeared at lines 332-343 in the original.
+
 print("\n[4/5] Running backtest...")
 
 # Daily compounded cash rate (derived once from the single config constant)
@@ -419,9 +408,7 @@ info_ratio      = annual_excess / tracking_err if tracking_err != 0 else np.nan
 
 bench_value = (1 + bench_aligned).cumprod() * INIT_CASH
 
-# FIX: All three metrics below were pulled from the unadjusted `portfolio` object
-#      while the rest of the table used the cash-adjusted series.  Now all metrics
-#      are derived consistently from port_value / port_ret_real.
+
 port_total_ret = (port_value.iloc[-1] / port_value.iloc[0]) - 1
 port_sharpe    = (port_ret_real.mean() / port_ret_real.std() * np.sqrt(252)
                   if port_ret_real.std() > 0 else np.nan)
@@ -449,9 +436,7 @@ calmar     = cagr / abs(port_maxdd) if port_maxdd != 0 else np.nan
 bench_cagr   = (bench_value.iloc[-1] / bench_value.iloc[0]) ** (1 / n_years) - 1
 bench_calmar = bench_cagr / abs(bench_maxdd) if bench_maxdd != 0 else np.nan
 
-# FIX: Sortino ratio was computed with std() of clipped returns, which is not
-#      downside deviation.  Correct formula: annualised mean return divided by
-#      the annualised downside deviation = sqrt(mean(min(r,0)^2)).
+
 downside_dev = np.sqrt((port_ret_real.clip(upper=0) ** 2).mean()) * np.sqrt(252)
 sortino      = (port_ret_real.mean() * 252) / downside_dev if downside_dev > 0 else np.nan
 
@@ -511,8 +496,6 @@ print("=" * 62)
 # 7. CHARTS
 # ==============================================================================
 
-# FIX: Original used portfolio.drawdown() (unadjusted).  Now computed directly
-#      from the cash-adjusted value curve for consistency with all other metrics.
 port_dd  = port_value / port_value.cummax() - 1
 bench_dd = bench_prices / bench_prices.cummax() - 1
 
