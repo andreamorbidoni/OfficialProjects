@@ -174,6 +174,10 @@ def run_min_var_app():
         slippage = st.number_input("Slippage (%)", value=0.30, step=0.01) / 100.0
         cash_return = st.number_input("Cash Return (Annual %)", value=3.5, step=0.1) / 100.0
         st.divider()
+        st.header("🎲 Monte Carlo Forecast")
+        mc_horizon = st.number_input("Forecast Horizon (Days)", min_value=21, max_value=1260, value=252, step=21)
+        mc_sims = st.number_input("Number of Simulations", min_value=100, max_value=10000, value=1000, step=100)
+        st.divider()
         run_btn = st.button("🚀 Run Backtest", type="primary", use_container_width=True)
 
     if run_btn:
@@ -347,6 +351,63 @@ def run_min_var_app():
             fig3.add_trace(go.Scatter(x=weights.index, y=weights[tick], name=tick, stackgroup="one", mode="none"))
         fig3.update_layout(template="plotly_white", yaxis_tickformat=".0%")
         st.plotly_chart(fig3, use_container_width=True)
+
+        # ── Monte Carlo Simulation ─────────────────────────────────────────────
+        st.divider()
+        st.subheader("🎲 Monte Carlo Return Simulation")
+        st.caption(f"Forward projection of {int(mc_horizon)} trading days using {int(mc_sims):,} simulated paths (GBM, bootstrapped from realised daily returns).")
+        with st.spinner("Running Monte Carlo..."):
+            rng = np.random.default_rng(seed=42)
+            # Bootstrap daily returns from realised history (preserves fat tails)
+            hist_rets = port_ret_real.dropna().values
+            sampled = rng.choice(hist_rets, size=(int(mc_sims), int(mc_horizon)), replace=True)
+            # Build cumulative paths starting from last portfolio value
+            start_val = float(port_value.iloc[-1])
+            cum_paths = start_val * np.cumprod(1 + sampled, axis=1)  # shape (sims, horizon)
+            # Compute percentiles
+            p05 = np.percentile(cum_paths, 5, axis=0)
+            p50 = np.percentile(cum_paths, 50, axis=0)
+            p95 = np.percentile(cum_paths, 95, axis=0)
+            # Build future date index (business days)
+            last_date = port_value.index[-1]
+            future_dates = pd.bdate_range(start=last_date, periods=int(mc_horizon) + 1)[1:]
+            fig_mc = go.Figure()
+            # 90% confidence band
+            fig_mc.add_trace(go.Scatter(
+                x=list(future_dates) + list(future_dates[::-1]),
+                y=list(p95) + list(p05[::-1]),
+                fill="toself", fillcolor="rgba(65,105,225,0.12)",
+                line=dict(color="rgba(0,0,0,0)"),
+                name="90% Confidence Band", hoverinfo="skip"
+            ))
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p05, name="5th Percentile",
+                line=dict(color="crimson", width=1.5, dash="dash")))
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p50, name="Median (50th)",
+                line=dict(color="royalblue", width=2.5)))
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p95, name="95th Percentile",
+                line=dict(color="seagreen", width=1.5, dash="dash")))
+            # Anchor line at current portfolio value
+            fig_mc.add_hline(y=start_val, line_dash="dot", line_color="gray",
+                             annotation_text=f"Current: €{start_val:,.0f}", annotation_position="bottom right")
+            fig_mc.update_layout(
+                template="plotly_white", hovermode="x unified",
+                yaxis_title="Portfolio Value (€)", xaxis_title="Date",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+            )
+            st.plotly_chart(fig_mc, use_container_width=True)
+            # Summary stats table
+            final_p05, final_p50, final_p95 = p05[-1], p50[-1], p95[-1]
+            mc_df = pd.DataFrame({
+                "Scenario": ["Bear (5th pct)", "Base (50th pct)", "Bull (95th pct)"],
+                "Final Value": [f"€{final_p05:,.0f}", f"€{final_p50:,.0f}", f"€{final_p95:,.0f}"],
+                "Return": [f"{(final_p05/start_val-1):.2%}", f"{(final_p50/start_val-1):.2%}", f"{(final_p95/start_val-1):.2%}"],
+                "Ann. Return": [
+                    f"{((final_p05/start_val)**(252/int(mc_horizon))-1):.2%}",
+                    f"{((final_p50/start_val)**(252/int(mc_horizon))-1):.2%}",
+                    f"{((final_p95/start_val)**(252/int(mc_horizon))-1):.2%}",
+                ]
+            })
+            st.dataframe(mc_df, use_container_width=True, hide_index=True)
 
 # ==============================================================================
 # 4. APP 2: PORTFOLIO REBALANCER
