@@ -1,3 +1,6 @@
+
+""" streamlit run "/Users/andrea/Library/Mobile Documents/com~apple~CloudDocs/GitHub/OfficialProjects/UFStools.py" """
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -167,6 +170,7 @@ def run_min_var_app():
         use_vol_target = st.checkbox("Enable Volatility Target", value=True)
         vol_target = st.slider("Max Volatility Target (%)", 1.0, 30.0, 10.0, 1.0) / 100.0 if use_vol_target else None
         te_penalty = st.number_input("TE Penalty (λ)", 0.0, 50.0, 10.0, 1.0)
+        max_cash_pct = st.slider("Max Cash Allocation (%)", 0, 100, 100, 5) / 100.0
         st.divider()
         st.header("💸 Execution & Fees")
         init_cash = st.number_input("Initial Cash (€)", value=100000)
@@ -250,6 +254,11 @@ def run_min_var_app():
                     port_vol = portfolio_ex_ante_vol(w_full, cov_full)
                     if port_vol > vol_target:
                         w_full *= (vol_target / port_vol)
+                # Enforce max cash: scale weights up if implied cash exceeds max_cash_pct
+                equity_held = w_full.sum()
+                min_equity = 1.0 - max_cash_pct
+                if equity_held < min_equity and equity_held > 0:
+                    w_full *= min_equity / equity_held
                 weights_dict[rebal_date] = w_full
                 progress_bar.progress((i + 1) / len(rebal_dates))
             progress_bar.empty()
