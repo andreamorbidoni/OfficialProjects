@@ -1,4 +1,3 @@
-
 """ streamlit run "/Users/andrea/Library/Mobile Documents/com~apple~CloudDocs/GitHub/OfficialProjects/UFStools.py" """
 
 import streamlit as st
@@ -297,6 +296,10 @@ def run_min_var_app():
             downside_dev = np.sqrt((port_ret_real.clip(upper=0)**2).mean()) * np.sqrt(252)
             sortino = (port_ret_real.mean()*252)/downside_dev if downside_dev > 0 else np.nan
             calmar = p_cagr/abs(p_dd) if p_dd != 0 else np.nan
+            bench_var = bench_aligned.var()
+            _aligned_bench = bench_aligned.reindex(port_ret_real.dropna().index).fillna(0)
+            beta = (np.cov(port_ret_real.dropna(), _aligned_bench)[0, 1] / bench_var) if bench_var > 0 else np.nan
+            var_95 = float(np.percentile(port_ret_real.dropna(), 5))
 
         st.success("✅ Backtest Simulation Complete")
         col1, col2, col3, col4 = st.columns(4)
@@ -304,12 +307,15 @@ def run_min_var_app():
         col2.metric("Strategy Volatility", f"{p_vol:.2%}", delta=f"{(p_vol-b_vol):.2%} vs Bench", delta_color="inverse")
         col3.metric("Max Drawdown", f"{p_dd:.2%}", delta=f"{(p_dd-b_dd):.2%} vs Bench")
         col4.metric("Sharpe Ratio", f"{p_sharpe:.2f}", delta=f"{(p_sharpe-b_sharpe):.2f} vs Bench")
+        col5, col6 = st.columns(2)
+        col5.metric("Beta vs Benchmark", f"{beta:.2f}")
+        col6.metric("Daily VaR (95%, 1-Day)", f"{var_95:.2%}")
         st.divider()
         tab1, tab2, tab3 = st.tabs(["Performance Metrics", "Volatility Metrics", "Stress Periods"])
         with tab1:
-            perf_df = pd.DataFrame({"Metric": ["Total Return","CAGR","Sharpe Ratio","Sortino Ratio","Calmar Ratio","Max Drawdown"],
-                "Strategy": [f"{((port_value.iloc[-1]/port_value.iloc[0])-1):.2%}", f"{p_cagr:.2%}", f"{p_sharpe:.2f}", f"{sortino:.2f}", f"{calmar:.2f}", f"{p_dd:.2%}"],
-                "Benchmark": [f"{((bench_value.iloc[-1]/bench_value.iloc[0])-1):.2%}", f"{b_cagr:.2%}", f"{b_sharpe:.2f}", "—", f"{(b_cagr/abs(b_dd) if b_dd!=0 else np.nan):.2f}", f"{b_dd:.2%}"]})
+            perf_df = pd.DataFrame({"Metric": ["Total Return","CAGR","Sharpe Ratio","Sortino Ratio","Calmar Ratio","Max Drawdown","Beta vs Benchmark","Daily VaR (95%, 1-Day)"],
+                "Strategy": [f"{((port_value.iloc[-1]/port_value.iloc[0])-1):.2%}", f"{p_cagr:.2%}", f"{p_sharpe:.2f}", f"{sortino:.2f}", f"{calmar:.2f}", f"{p_dd:.2%}", f"{beta:.2f}", f"{var_95:.2%}"],
+                "Benchmark": [f"{((bench_value.iloc[-1]/bench_value.iloc[0])-1):.2%}", f"{b_cagr:.2%}", f"{b_sharpe:.2f}", "—", f"{(b_cagr/abs(b_dd) if b_dd!=0 else np.nan):.2f}", f"{b_dd:.2%}", "1.00", "—"]})
             st.dataframe(perf_df, use_container_width=True, hide_index=True)
         with tab2:
             vol_df = pd.DataFrame({"Metric": ["Realised Vol (ann.)","Vol Reduction vs Bench","Tracking Error","Information Ratio","Annual Excess Return"],
