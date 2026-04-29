@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 from datetime import date, timedelta
+import io
 import warnings
 
 # ==============================================================================
@@ -140,6 +141,140 @@ def add_stress_shading(fig, periods):
         fig.add_vrect(x0=s, x1=e, fillcolor="red", opacity=0.07, layer="below", line_width=0,
                       annotation_text=name, annotation_position="top left",
                       annotation=dict(font_size=9, font_color="crimson"))
+
+# ==============================================================================
+# 2b. EXPORT HELPER
+# ==============================================================================
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+
+def build_backtest_xlsx(port_ret_real, bench_aligned, weights, prices, benchmark_label: str, settings: dict = None) -> bytes:
+    """Build an in-memory .xlsx with sheets: Settings, Returns, Weights, Asset Returns, Asset Prices."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # Imports moved here for safety
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        # --- Sheet 0: Run Settings ---
+        if settings:
+            settings_df = pd.DataFrame(list(settings.items()), columns=["Parameter", "Value"])
+            settings_df.to_excel(writer, sheet_name="Run Settings", index=False)
+            ws0 = writer.sheets["Run Settings"]
+
+            label_fill  = PatternFill("solid", start_color="1F497D")
+            label_font  = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+            value_fill  = PatternFill("solid", start_color="DCE6F1")
+            value_font  = Font(name="Arial", size=10)
+            section_fills = {
+                "Universe":                  PatternFill("solid", start_color="E2EFDA"),
+                "Benchmark Ticker":          PatternFill("solid", start_color="E2EFDA"),
+                "Start Date":                PatternFill("solid", start_color="E2EFDA"),
+                "End Date":                  PatternFill("solid", start_color="E2EFDA"),
+            }
+
+            # Header row
+            for cell in ws0[1]:
+                cell.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+                cell.fill = PatternFill("solid", start_color="1F497D")
+                cell.alignment = Alignment(horizontal="center")
+
+            ws0.column_dimensions["A"].width = 32
+            ws0.column_dimensions["B"].width = 40
+
+            for row in ws0.iter_rows(min_row=2, max_row=len(settings) + 1):
+                param_cell, value_cell = row[0], row[1]
+                param_cell.font  = Font(bold=True, name="Arial", size=10)
+                param_cell.fill  = section_fills.get(param_cell.value, PatternFill("solid", start_color="DCE6F1"))
+                value_cell.font  = Font(name="Arial", size=10)
+                value_cell.fill  = PatternFill("solid", start_color="F2F2F2")
+                param_cell.alignment = Alignment(horizontal="left", indent=1)
+                value_cell.alignment = Alignment(horizontal="left", indent=1)
+
+        # --- Sheet 1: Daily Returns ---
+        returns_df = pd.DataFrame({
+            "Portfolio Daily Return": port_ret_real,
+            f"Benchmark Daily Return ({benchmark_label})": bench_aligned,
+        })
+        returns_df.index.name = "Date"
+        returns_df.to_excel(writer, sheet_name="Daily Returns")
+        ws1 = writer.sheets["Daily Returns"]
+        
+        header_fill = PatternFill("solid", start_color="1F497D")
+        header_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+        body_font = Font(name="Arial", size=10)
+        pct_fmt = "0.00%"
+        date_fmt = "YYYY-MM-DD"
+
+        for cell in ws1[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+            
+        ws1.column_dimensions["A"].width = 14
+        ws1.column_dimensions["B"].width = 26
+        ws1.column_dimensions["C"].width = 38
+
+        for row in ws1.iter_rows(min_row=2):
+            row[0].number_format = date_fmt
+            row[0].font = body_font
+            for cell in row[1:]:
+                cell.number_format = pct_fmt
+                cell.font = body_font
+
+        # --- Sheet 2: Historical Weights ---
+        weights_out = weights.copy()
+        weights_out.index.name = "Date"
+        weights_out.to_excel(writer, sheet_name="Historical Weights")
+        ws2 = writer.sheets["Historical Weights"]
+        
+        for cell in ws2[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+            
+        ws2.column_dimensions["A"].width = 14
+        n_cols = weights_out.shape[1]
+        for col_idx in range(2, n_cols + 2):
+            ws2.column_dimensions[get_column_letter(col_idx)].width = 14
+
+        for row in ws2.iter_rows(min_row=2):
+            row[0].number_format = date_fmt
+            row[0].font = body_font
+            for cell in row[1:]:
+                cell.number_format = pct_fmt
+                cell.font = body_font
+
+        # --- Sheet 3 & 4: Asset Daily Returns & Prices ---
+        asset_returns = prices.pct_change()
+        asset_returns.index.name = "Date"
+        asset_returns.to_excel(writer, sheet_name="Asset Daily Returns")
+
+        prices_out = prices.copy()
+        prices_out.index.name = "Date"
+        prices_out.to_excel(writer, sheet_name="Asset Prices")
+
+        for sheet_name in ("Asset Daily Returns", "Asset Prices"):
+            ws = writer.sheets[sheet_name]
+            for cell in ws[1]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+            ws.column_dimensions["A"].width = 14
+            nc = prices_out.shape[1]
+            for col_idx in range(2, nc + 2):
+                ws.column_dimensions[get_column_letter(col_idx)].width = 14
+            for row in ws.iter_rows(min_row=2):
+                row[0].number_format = date_fmt
+                row[0].font = body_font
+                for cell in row[1:]:
+                    cell.font = body_font
+                    if sheet_name == "Asset Daily Returns":
+                        cell.number_format = pct_fmt
+
+    buf.seek(0)
+    return buf.read()
+
 
 # ==============================================================================
 # 3. APP 1: MIN-VOL BACKTESTER
@@ -302,6 +437,35 @@ def run_min_var_app():
             var_95 = float(np.percentile(port_ret_real.dropna(), 5))
 
         st.success("✅ Backtest Simulation Complete")
+        st.session_state["mv_data"] = {
+            "port_ret_real": port_ret_real,
+            "bench_aligned": bench_aligned,
+            "weights": weights,
+            "prices": prices,
+            "benchmark_label": benchmark,
+            "settings": {
+                "Universe": ", ".join(tickers),
+                "Benchmark Ticker": benchmark,
+                "Start Date": str(start_date),
+                "End Date": str(end_date),
+                "Covariance Lookback (Days)": cov_lookback,
+                "Rebalance Frequency (Days)": rebal_freq,
+                "Min Weight per Asset": f"{min_weight:.2%}",
+                "Max Weight per Asset": f"{max_weight:.2%}",
+                "Max Weight per Sector": f"{max_sector:.2%}",
+                "Shrinkage Alpha": shrink_alpha,
+                "Volatility Target Enabled": use_vol_target,
+                "Max Volatility Target": f"{vol_target:.2%}" if vol_target is not None else "N/A",
+                "TE Penalty (λ)": te_penalty,
+                "Max Cash Allocation": f"{max_cash_pct:.2%}",
+                "Initial Cash (€)": f"€{init_cash:,.0f}",
+                "Trading Fees": f"{fees:.2%}",
+                "Slippage": f"{slippage:.2%}",
+                "Cash Return (Annual)": f"{cash_return:.2%}",
+                "Monte Carlo Horizon (Days)": mc_horizon,
+                "Monte Carlo Simulations": mc_sims,
+            },
+        }
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Strategy CAGR", f"{p_cagr:.2%}", delta=f"{(p_cagr-b_cagr):.2%} vs Bench")
         col2.metric("Strategy Volatility", f"{p_vol:.2%}", delta=f"{(p_vol-b_vol):.2%} vs Bench", delta_color="inverse")
@@ -423,6 +587,42 @@ def run_min_var_app():
                 ]
             })
             st.dataframe(mc_df, use_container_width=True, hide_index=True)
+
+    # ── Export to Excel ────────────────────────────────────────────────────
+    # Check if we have data stored from a previous backtest run
+    if "mv_data" in st.session_state:
+        st.divider()
+        st.subheader("⬇️ Export Backtest Data")
+        
+        # Generate Button
+        if st.button("📊 Generate Excel Report", type="primary", use_container_width=True):
+            with st.spinner("Building Excel workbook..."):
+                try:
+                    data = st.session_state["mv_data"]
+                    xlsx_bytes = build_backtest_xlsx(
+                        port_ret_real=data["port_ret_real"],
+                        bench_aligned=data["bench_aligned"],
+                        weights=data["weights"],
+                        prices=data["prices"],
+                        benchmark_label=data["benchmark_label"],
+                        settings=data.get("settings"),
+                    )
+                    # Store the generated file so the Download button can find it
+                    st.session_state["xlsx_bytes"] = xlsx_bytes
+                    st.success("✅ Workbook ready!")
+                except Exception as e:
+                    st.error(f"❌ Export failed: {str(e)}")
+                    st.session_state["xlsx_bytes"] = None
+
+        # Download Button (Only shows if file is ready)
+        if "xlsx_bytes" in st.session_state and st.session_state["xlsx_bytes"] is not None:
+            st.download_button(
+                label="⬇️ Download Backtest.xlsx",
+                data=st.session_state["xlsx_bytes"],
+                file_name=f"backtest_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
 # ==============================================================================
 # 4. APP 2: PORTFOLIO REBALANCER
