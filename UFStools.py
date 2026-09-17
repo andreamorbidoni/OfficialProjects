@@ -544,9 +544,9 @@ def run_min_var_app():
             start_val = float(port_value.iloc[-1])
             cum_paths = start_val * np.cumprod(1 + sampled, axis=1)  # shape (sims, horizon)
             # Compute percentiles
-            p05 = np.percentile(cum_paths, 5, axis=0)
+            p05 = np.percentile(cum_paths, 20, axis=0)
             p50 = np.percentile(cum_paths, 50, axis=0)
-            p95 = np.percentile(cum_paths, 95, axis=0)
+            p95 = np.percentile(cum_paths, 75, axis=0)
             # Build future date index (business days)
             last_date = port_value.index[-1]
             future_dates = pd.bdate_range(start=last_date, periods=int(mc_horizon) + 1)[1:]
@@ -557,13 +557,13 @@ def run_min_var_app():
                 y=list(p95) + list(p05[::-1]),
                 fill="toself", fillcolor="rgba(65,105,225,0.12)",
                 line=dict(color="rgba(0,0,0,0)"),
-                name="90% Confidence Band", hoverinfo="skip"
+                name="Confidence Band", hoverinfo="skip"
             ))
-            fig_mc.add_trace(go.Scatter(x=future_dates, y=p05, name="5th Percentile",
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p05, name="20th Percentile",
                 line=dict(color="crimson", width=1.5, dash="dash")))
             fig_mc.add_trace(go.Scatter(x=future_dates, y=p50, name="Median (50th)",
                 line=dict(color="royalblue", width=2.5)))
-            fig_mc.add_trace(go.Scatter(x=future_dates, y=p95, name="95th Percentile",
+            fig_mc.add_trace(go.Scatter(x=future_dates, y=p95, name="75th Percentile",
                 line=dict(color="seagreen", width=1.5, dash="dash")))
             # Anchor line at current portfolio value
             fig_mc.add_hline(y=start_val, line_dash="dot", line_color="gray",
@@ -577,7 +577,7 @@ def run_min_var_app():
             # Summary stats table
             final_p05, final_p50, final_p95 = p05[-1], p50[-1], p95[-1]
             mc_df = pd.DataFrame({
-                "Scenario": ["Bear (5th pct)", "Base (50th pct)", "Bull (95th pct)"],
+                "Scenario": ["Bear (20th pct)", "Base (50th pct)", "Bull (75th pct)"],
                 "Final Value": [f"€{final_p05:,.0f}", f"€{final_p50:,.0f}", f"€{final_p95:,.0f}"],
                 "Return": [f"{(final_p05/start_val-1):.2%}", f"{(final_p50/start_val-1):.2%}", f"{(final_p95/start_val-1):.2%}"],
                 "Ann. Return": [
